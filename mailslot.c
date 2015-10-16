@@ -198,7 +198,7 @@ static int getMessage(const char *buff, int instance, size_t *ret_len)
 	if (*count == 0)
 	{
 		printk("No message to read\n");
-		char err[] = "No message to read\n";
+		char err[] = "No message to read";
 		strcpy(buff,err);
 		*ret_len = strlen(err);
 		return 0;
