@@ -178,14 +178,16 @@ static int pushMessage(const char *buff, int len, int instance)
 	}
 	
 	// 2. Copy input message to allocated space
-	printk("There are currently %d messages in this mailslot\n",*count);
-	memcpy(instances[instance]->messages[*count]->content,buff,len);
+	strcpy(instances[instance]->messages[*count]->content,buff);
 	instances[instance]->messages[*count]->len = len;
 	
-	printk("Message successfully inserted. There are now %d messages in current mailslot\n", *count);
 	printk("Message pushed: %s\n",instances[instance]->messages[*count]->content);
+	printk("Message length: %d\n", instances[instance]->messages[*count]->len);
 	// 3. Increment message counter
-	*count = *count + 1;
+	*count += 1;
+	
+	printk("There are currently %d messages in this mailslot\n",*count);
+	
 	return 0;
 }
 
@@ -199,10 +201,13 @@ static int getMessage(const char *buff, int instance)
 		return 0;
 	}
 
-	struct message *msg = instances[instance]->messages[*count];
+	struct message *msg = instances[instance]->messages[*count-1];
 
 	// 1. Copy message to return struct
-	copy_to_user(buff,msg->content,msg->len);
+	printk("Copying message: %s\n", msg->content);
+	printk("Message length: %d\n", msg->len);
+	//copy_to_user(buff,msg->content,msg->len);
+	strcpy(buff,msg->content);
 
 	// 2. Decrease message counter
 	*count--;
