@@ -1,0 +1,4 @@
+insmod mailslot.ko
+mknod /dev/mailslot c 250 0
+chmod 666 /dev/mailslot
+echo ciao > /dev/mailslot
