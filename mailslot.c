@@ -35,7 +35,7 @@ struct cdev *mailslot_cdev;
 static struct message
 {
 	char *content;
-	int len;
+	size_t len;
 };
 
 // Mailslot instance struct
@@ -48,8 +48,8 @@ static struct mailslot
 
 
 /* Module facilities */
-static int pushMessage(const char *buff, int len, int instance);
-static int getMessage(const char *buff, int instance);
+static int pushMessage(const char *buff, size_t len, int instance);
+static int getMessage(const char *buff, int instance, size_t *ret_len);
 static int clearMailslot(int instance);
 
 // Mailslots
@@ -128,15 +128,15 @@ static ssize_t mailslot_read(struct file *filp,
 	int minor = iminor(filp->f_path.dentry->d_inode);
 	
 	// 2. Get message
-	char *ret_buff;
-	getMessage(buff,minor);
+	size_t ret_len;
+	getMessage(buff,minor,&ret_len);
 
 	printk("Message: %s\n",buff);
 
 	// Change reading pos
 	if (*off == 0)
 	{
-		*off += 1;
+		*off += ret_len;
 		return *off;
 	}
 	else
@@ -164,9 +164,8 @@ static ssize_t mailslot_write(struct file *filp,
 /* Module facilities */
 
 // Push message into mailslot (specified by "instance")
-static int pushMessage(const char *buff, int len, int instance)
+static int pushMessage(const char *buff, size_t len, int instance)
 {
-	printk("Message content: %s\n", buff);
 	printk("Pushing message to mailslot: %d\n",instance);
 	int *count = &instances[instance]->messages_count;
 
@@ -192,16 +191,20 @@ static int pushMessage(const char *buff, int len, int instance)
 }
 
 // Get message (FIFO order). Once a message is returned is also removed from its mailslot
-static int getMessage(const char *buff, int instance)
+static int getMessage(const char *buff, int instance, size_t *ret_len)
 {
 	int *count = &instances[instance]->messages_count;
 	if (*count == 0)
 	{
 		printk("No message to read\n");
+		char err[] = "No message to read\n";
+		strcpy(buff,err);
+		*ret_len = strlen(err);
 		return 0;
 	}
 
 	struct message *msg = instances[instance]->messages[*count-1];
+	*ret_len = msg->len;
 
 	// 1. Copy message to return struct
 	printk("Copying message: %s\n", msg->content);
@@ -210,7 +213,7 @@ static int getMessage(const char *buff, int instance)
 	memcpy(buff,msg->content,msg->len);
 
 	// 2. Decrease message counter
-	*count--;
+	*count -= 1;
 
 	printk("Message successfully returned and removed\n");
 	return 0;
