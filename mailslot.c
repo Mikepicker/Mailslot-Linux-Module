@@ -11,6 +11,7 @@
 #include <linux/slab.h>		/* For kmalloc */
 #include <asm/uaccess.h>	/* For copy_to_user */
 #include <linux/cdev.h>		/* Modern way to handle cdevs (cdev_alloc())*/
+#include <linux/mutex.h>	/* Mutual exclusion */
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michele Rullo");
@@ -44,6 +45,7 @@ static struct mailslot
 	int opened;	// 1 if opened
 	struct message *messages[MAILSLOT_STORAGE];
 	int messages_count;
+	struct mutex mutex; // Mutual exclusion on mailslot (device)
 };
 
 
@@ -122,21 +124,35 @@ static ssize_t mailslot_read(struct file *filp,
    size_t len,
    loff_t *off)
 {
+	// Avoid reading if off > 0 ("cat" reads twice!)
+	if (*off > 0) return 0;
+
 	printk("Mailslot read\n");
 
 	// 1. Get minor number
 	int minor = iminor(filp->f_path.dentry->d_inode);
 	
-	// 2. Get message
+	// 2. Try getting the lock on current mailslot
+	if (mutex_lock_interruptible(&instances[minor]->mutex))
+	{
+		printk("Mailslot %d is currently busy\n",minor);
+		return -1;
+	}
+
+	// 3. Get message
 	size_t ret_len;
 	getMessage(buff,minor,&ret_len);
+	
+	// 4. Unlock mutex
+	mutex_unlock(&instances[minor]->mutex);
 
 	printk("Message: %s\n",buff);
-
-	// Change reading pos
+	strcat(buff, "\n");
+	
+	// 5. Change reading pos
 	if (*off == 0)
 	{
-		*off += ret_len;
+		*off += ret_len+1;
 		return *off;
 	}
 	else
@@ -145,50 +161,35 @@ static ssize_t mailslot_read(struct file *filp,
 
 /* Write on desired mailslot */
 static ssize_t mailslot_write(struct file *filp,
+
    const char *buff,
    size_t len,
    loff_t *off)
 {
+
 	printk("Mailslot writing %d bytes\n",len);
 	
 	// 1. Get minor number (device)
 	int minor = iminor(filp->f_path.dentry->d_inode);
 	
-	// 2. Push message to mailslot
+	// 2. Try getting the lock on current mailslot
+	if (mutex_lock_interruptible(&instances[minor]->mutex))
+	{
+		printk("Mailslot %d is currently busy\n",minor);
+		return -1;
+	}
+	
+	// 3. Push message to mailslot
 	pushMessage(buff,len,minor);
+
+	// 4. Release lock
+	mutex_unlock(&instances[minor]->mutex);
 
 	printk("Done!\n");
 	return len;
 }
 
 /* Module facilities */
-
-// Push message into mailslot (specified by "instance")
-static int pushMessage(const char *buff, size_t len, int instance)
-{
-	printk("Pushing message to mailslot: %d\n",instance);
-	int *count = &instances[instance]->messages_count;
-
-	// 1. Check if there's space
-	if (*count == MAILSLOT_STORAGE)
-	{
-		printk("Mailslot full, message discarded\n");
-		return -1;
-	}
-	
-	// 2. Copy input message to allocated space
-	memcpy(instances[instance]->messages[*count]->content,buff,len);
-	instances[instance]->messages[*count]->len = len;
-	
-	printk("Message pushed: %s\n",instances[instance]->messages[*count]->content);
-	printk("Message length: %d\n", instances[instance]->messages[*count]->len);
-	// 3. Increment message counter
-	*count += 1;
-	
-	printk("There are currently %d messages in this mailslot\n",*count);
-	
-	return 0;
-}
 
 // Get message (FIFO order). Once a message is returned is also removed from its mailslot
 static int getMessage(const char *buff, int instance, size_t *ret_len)
@@ -219,6 +220,33 @@ static int getMessage(const char *buff, int instance, size_t *ret_len)
 	return 0;
 }
 
+// Push message into mailslot (specified by "instance")
+static int pushMessage(const char *buff, size_t len, int instance)
+{
+	printk("Pushing message to mailslot: %d\n",instance);
+	int *count = &instances[instance]->messages_count;
+
+	// 1. Check if there's space
+	if (*count == MAILSLOT_STORAGE)
+	{
+		printk("Mailslot full, message discarded\n");
+		return -1;
+	}
+	
+	// 2. Copy input message to allocated space
+	memcpy(instances[instance]->messages[*count]->content,buff,len);
+	instances[instance]->messages[*count]->len = len;
+	
+	printk("Message pushed: %s\n",instances[instance]->messages[*count]->content);
+	printk("Message length: %d\n", instances[instance]->messages[*count]->len);
+	// 3. Increment message counter
+	*count += 1;
+	
+	printk("There are currently %d messages in this mailslot\n",*count);
+	
+	return 0;
+}
+
 // Clear mailslot (called by "release" ioctl operation)
 static int clearMailslot(int instance)
 {
@@ -237,6 +265,41 @@ static struct file_operations fops =
 
 int init_module(void)
 {
+	// Allocate mailslot instances
+	int i;
+	for (i = 0; i < INSTANCES; i++)
+	{
+		instances[i] = kmalloc(sizeof(struct mailslot), GFP_KERNEL);
+		if (!instances[i])
+		{
+			printk("Allocating memory for mailslot failed\n");
+			return -1;
+		}
+		memset(instances[i], 0, sizeof(struct mailslot));
+		instances[i]->opened = 0;
+		instances[i]->messages_count = 0;
+		mutex_init(&instances[i]->mutex);
+
+		// 6. Allocate space for messages
+		int j;
+		for (j = 0; j < MAILSLOT_STORAGE; j++)
+		{
+			instances[i]->messages[j] = kmalloc(sizeof(struct message), GFP_KERNEL);
+			if (!instances[i]->messages[j])
+			{
+				printk("Allocating memory for message failed\n");
+				return -1;
+			}
+
+			instances[i]->messages[j]->content = kmalloc(sizeof(char)*MESSAGE_SIZE,GFP_KERNEL);
+			if (!instances[i]->messages[j]->content)
+			{
+				printk("Allocating memory for message content failed\n");
+			}
+		}
+	}
+
+	/* cdev setup */
 	// 1. Allocate dynamically a device numbers region
 	dev_t dev;
 	int err = alloc_chrdev_region(&dev, MINOR_LOWER, MINOR_LOWER+INSTANCES, DEVICE_NAME);
@@ -275,38 +338,6 @@ int init_module(void)
 
 	printk(KERN_INFO "Mailslot device registered, it is assigned major number %d\n", Major);
 
-	// 5. Allocate mailslot instances
-	int i;
-	for (i = 0; i < INSTANCES; i++)
-	{
-		instances[i] = kmalloc(sizeof(struct mailslot), GFP_KERNEL);
-		if (!instances[i])
-		{
-			printk("Allocating memory for mailslot failed\n");
-			return -1;
-		}
-		memset(instances[i], 0, sizeof(struct mailslot));
-		instances[i]->opened = 0;
-		instances[i]->messages_count = 0;
-
-		// 6. Allocate space for messages
-		int j;
-		for (j = 0; j < MAILSLOT_STORAGE; j++)
-		{
-			instances[i]->messages[j] = kmalloc(sizeof(struct message), GFP_KERNEL);
-			if (!instances[i]->messages[j])
-			{
-				printk("Allocating memory for message failed\n");
-				return -1;
-			}
-
-			instances[i]->messages[j]->content = kmalloc(sizeof(char)*MESSAGE_SIZE,GFP_KERNEL);
-			if (!instances[i]->messages[j]->content)
-			{
-				printk("Allocating memory for message content failed\n");
-			}
-		}
-	}
 	return 0;
 }
 
