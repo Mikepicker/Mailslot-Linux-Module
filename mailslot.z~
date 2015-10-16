@@ -178,7 +178,7 @@ static int pushMessage(const char *buff, int len, int instance)
 	}
 	
 	// 2. Copy input message to allocated space
-	memcpy(instances[instance]->messages[*count]->content,buff,len);
+	strcpy(instances[instance]->messages[*count]->content,buff);
 	instances[instance]->messages[*count]->len = len;
 	
 	printk("Message pushed: %s\n",instances[instance]->messages[*count]->content);
@@ -207,7 +207,7 @@ static int getMessage(const char *buff, int instance)
 	printk("Copying message: %s\n", msg->content);
 	printk("Message length: %d\n", msg->len);
 	//copy_to_user(buff,msg->content,msg->len);
-	memcpy(buff,msg->content,msg->len);
+	strcpy(buff,msg->content);
 
 	// 2. Decrease message counter
 	*count--;
