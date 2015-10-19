@@ -205,7 +205,8 @@ static int getMessage(const char *buff, int instance, size_t *ret_len)
 		*ret_len = strlen(err);
 		return 0;
 	}
-
+	printk("YEEEAH");
+	printk("MESSAGE STORED: %s\n", instances[instance]->head->content);
 	*ret_len = instances[instance]->head->len;
 
 	// 1. Copy message to return struct
@@ -271,17 +272,17 @@ static int pushMessage(const char *buff, size_t len, int instance)
 	printk("Message pushed: %s\n",msg->content);
 	printk("Message length: %d\n", msg->len);
 
-	// 3. Increment message counter
-	*count += 1;
-
-	// 4. Link message to tail
+	// 3. Link message to tail
 	if (*count == 0)
-		instances[instance]->tail = msg;
-	if (*count > 0)
 	{
-		instances[instance]->tail->next = msg;
+		instances[instance]->head = msg;
 		instances[instance]->tail = msg;
 	}
+	if (*count > 0)
+		instances[instance]->tail->next = msg;
+
+	// 4. Increment message counter
+	*count += 1;
 
 	printk("There are currently %d messages in this mailslot\n",*count);
 	
