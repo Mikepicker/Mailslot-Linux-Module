@@ -37,15 +37,17 @@ static struct message
 {
 	char *content;
 	size_t len;
+	struct message *next;
 };
 
 // Mailslot instance struct
 static struct mailslot
 {
-	int opened;	// 1 if opened
-	struct message *messages[MAILSLOT_STORAGE];
+	int opened;		// 1 if opened
+	struct message *head;	// FIFO head
+	struct message *tail;	// FIFO tail
 	int messages_count;
-	struct mutex mutex; // Mutual exclusion on mailslot (device)
+	struct mutex mutex;	 // Mutual exclusion on mailslot (device)
 };
 
 
@@ -204,15 +206,24 @@ static int getMessage(const char *buff, int instance, size_t *ret_len)
 		return 0;
 	}
 
-	struct message *msg = instances[instance]->messages[*count-1];
-	*ret_len = msg->len;
+	*ret_len = instances[instance]->head->len;
 
 	// 1. Copy message to return struct
-	printk("Copying message: %s\n", msg->content);
-	printk("Message length: %d\n", msg->len);
+	printk("Copying message: %s\n", instances[instance]->head->content);
+	printk("Message length: %d\n", instances[instance]->head->len);
 	//copy_to_user(buff,msg->content,msg->len);
-	memcpy(buff,msg->content,msg->len);
+	memcpy(buff,instances[instance]->head->content,instances[instance]->head->len);
 
+	// 2. Remove message
+	if (*count > 1)
+	{
+		struct message *new_head = instances[instance]->head->next;
+		kfree(instances[instance]->head);
+		instances[instance]->head = new_head;
+	}
+	else if (*count == 1)
+		kfree(instances[instance]->head);
+	
 	// 2. Decrease message counter
 	*count -= 1;
 
@@ -232,16 +243,46 @@ static int pushMessage(const char *buff, size_t len, int instance)
 		printk("Mailslot full, message discarded\n");
 		return -1;
 	}
+
+	// 2. Allocate space for message struct
+	struct message *msg = kmalloc(sizeof(struct message), GFP_KERNEL);
 	
-	// 2. Copy input message to allocated space
-	memcpy(instances[instance]->messages[*count]->content,buff,len);
-	instances[instance]->messages[*count]->len = len;
+	if (!msg)
+	{
+		printk("Unable to allocate space for message\n");
+		return -1;
+	}
+	memset(msg,0,sizeof(struct message));
+
+	// 3. Allocate space for message content
+	msg->content = kmalloc(MESSAGE_SIZE, GFP_KERNEL);
 	
-	printk("Message pushed: %s\n",instances[instance]->messages[*count]->content);
-	printk("Message length: %d\n", instances[instance]->messages[*count]->len);
+	if (!msg->content)
+	{
+		printk("Unable to allocate space for message content\n");
+		return -1;
+	}
+	memset(msg->content,0,MESSAGE_SIZE);
+
+	// 4. Copy input message to allocated space
+	memcpy(msg->content,buff,len);
+	msg->len = len;
+	
+	printk("Message pushed: %s\n",msg->content);
+	printk("Message length: %d\n", msg->len);
+
 	// 3. Increment message counter
 	*count += 1;
-	
+
+	// 4. Link message to tail
+	if (*count == 0)
+		instances[instance]->tail = msg;
+	if (*count > 0)
+	{
+		instances[instance]->tail->next = msg;
+		instances[instance]->tail = msg;
+	}
+
 	printk("There are currently %d messages in this mailslot\n",*count);
 	
 	return 0;
@@ -279,24 +320,6 @@ int init_module(void)
 		instances[i]->opened = 0;
 		instances[i]->messages_count = 0;
 		mutex_init(&instances[i]->mutex);
-
-		// 6. Allocate space for messages
-		int j;
-		for (j = 0; j < MAILSLOT_STORAGE; j++)
-		{
-			instances[i]->messages[j] = kmalloc(sizeof(struct message), GFP_KERNEL);
-			if (!instances[i]->messages[j])
-			{
-				printk("Allocating memory for message failed\n");
-				return -1;
-			}
-
-			instances[i]->messages[j]->content = kmalloc(sizeof(char)*MESSAGE_SIZE,GFP_KERNEL);
-			if (!instances[i]->messages[j]->content)
-			{
-				printk("Allocating memory for message content failed\n");
-			}
-		}
 	}
 
 	/* cdev setup */
@@ -350,10 +373,13 @@ void cleanup_module(void)
 	for (i = 0; i < INSTANCES; i++)
 	{
 		int j;
-		for (j = 0; j < MAILSLOT_STORAGE; j++)
+		struct message *msg;
+		for (j = 0; j < instances[i]->messages_count; j++)
 		{
-			kfree(instances[i]->messages[j]->content);
-			kfree(instances[i]->messages[j]);
+			msg = instances[i]->head->next;
+			kfree(instances[i]->head->content);
+			kfree(instances[i]->head);
+			instances[i]->head = msg;
 		}
 
 		kfree(instances[i]);
