@@ -205,8 +205,6 @@ static int getMessage(const char *buff, int instance, size_t *ret_len)
 		*ret_len = strlen(err);
 		return 0;
 	}
-	printk("YEEEAH");
-	printk("MESSAGE STORED: %s\n", instances[instance]->head->content);
 	*ret_len = instances[instance]->head->len;
 
 	// 1. Copy message to return struct
